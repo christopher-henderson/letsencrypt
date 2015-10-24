@@ -9,7 +9,6 @@ import os
 import pkg_resources
 import sys
 import time
-import traceback
 
 import configargparse
 import OpenSSL
@@ -34,6 +33,7 @@ from letsencrypt import log
 from letsencrypt import reporter
 from letsencrypt import storage
 
+from letsencrypt.cli_common import handle_exception
 from letsencrypt.display import util as display_util
 from letsencrypt.display import ops as display_ops
 from letsencrypt.errors import Error, PluginSelectionError, CertStorageError
@@ -989,54 +989,9 @@ def setup_logging(args, cli_handler_factory, logfile):
     logger.info("Saving debug log to %s", log_file_path)
 
 
-def _handle_exception(exc_type, exc_value, trace, args):
-    """Logs exceptions and reports them to the user.
-
-    Args is used to determine how to display exceptions to the user. In
-    general, if args.debug is True, then the full exception and traceback is
-    shown to the user, otherwise it is suppressed. If args itself is None,
-    then the traceback and exception is attempted to be written to a logfile.
-    If this is successful, the traceback is suppressed, otherwise it is shown
-    to the user. sys.exit is always called with a nonzero status.
-
-    """
-    logger.debug(
-        "Exiting abnormally:%s%s",
-        os.linesep,
-        "".join(traceback.format_exception(exc_type, exc_value, trace)))
-
-    if issubclass(exc_type, Exception) and (args is None or not args.debug):
-        if args is None:
-            logfile = "letsencrypt.log"
-            try:
-                with open(logfile, "w") as logfd:
-                    traceback.print_exception(
-                        exc_type, exc_value, trace, file=logfd)
-            except:  # pylint: disable=bare-except
-                sys.exit("".join(
-                    traceback.format_exception(exc_type, exc_value, trace)))
-
-        if issubclass(exc_type, Error):
-            sys.exit(exc_value)
-        else:
-            # Tell the user a bit about what happened, without overwhelming
-            # them with a full traceback
-            msg = ("An unexpected error occurred.\n" +
-                   traceback.format_exception_only(exc_type, exc_value)[0] +
-                   "Please see the ")
-            if args is None:
-                msg += "logfile '{0}' for more details.".format(logfile)
-            else:
-                msg += "logfiles in {0} for more details.".format(args.logs_dir)
-            sys.exit(msg)
-    else:
-        sys.exit("".join(
-            traceback.format_exception(exc_type, exc_value, trace)))
-
-
 def main(cli_args=sys.argv[1:]):
     """Command line argument parsing and main script execution."""
-    sys.excepthook = functools.partial(_handle_exception, args=None)
+    sys.excepthook = functools.partial(handle_exception, args=None)
 
     # note: arg parser internally handles --help (and exits afterwards)
     plugins = plugins_disco.PluginsRegistry.find_all()

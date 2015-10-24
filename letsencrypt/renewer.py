@@ -11,6 +11,8 @@ import argparse
 import logging
 import os
 import sys
+import functools
+import errno
 
 import OpenSSL
 import zope.component
@@ -27,9 +29,9 @@ from letsencrypt import le_util
 from letsencrypt import notify
 from letsencrypt import storage
 
+from letsencrypt.cli_common import handle_exception
 from letsencrypt.display import util as display_util
 from letsencrypt.plugins import disco as plugins_disco
-
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +113,10 @@ def renew(cert, old_version):
     #       (where fewer than all names were renewed)
 
 
+def _renew(cli_config):
+
+
+
 def _cli_log_handler(args, level, fmt):  # pylint: disable=unused-argument
     handler = colored_logging.StreamHandler()
     handler.setFormatter(logging.Formatter(fmt))
@@ -153,10 +159,12 @@ def main(cli_args=sys.argv[1:]):
     #       presumably also be able to specify a config file on the
     #       command line, which, if provided, should take precedence over
     #       te default config files
+    sys.excepthook = functools.partial(handle_exception, args=None)
 
     zope.component.provideUtility(display_util.FileDisplay(sys.stdout))
 
     args = _create_parser().parse_args(cli_args)
+    sys.excepthook = functools.partial(handle_exception, args=args)
 
     uid = os.geteuid()
     le_util.make_or_verify_dir(args.logs_dir, 0o700, uid)
@@ -167,7 +175,6 @@ def main(cli_args=sys.argv[1:]):
     # Ensure that all of the needed folders have been created before continuing
     le_util.make_or_verify_dir(cli_config.work_dir,
                                constants.CONFIG_DIRS_MODE, uid)
-
     for renewal_file in os.listdir(cli_config.renewal_configs_dir):
         print "Processing", renewal_file
         try:
@@ -180,13 +187,32 @@ def main(cli_args=sys.argv[1:]):
             #       dramatically improve performance for large deployments
             #       where autorenewal is widely turned off.
             cert = storage.RenewableCert(renewal_file, cli_config)
-        except errors.CertStorageError:
-            # This indicates an invalid renewal configuration file, such
-            # as one missing a required parameter (in the future, perhaps
-            # also one that is internally inconsistent or is missing a
-            # required parameter).  As a TODO, maybe we should warn the
-            # user about the existence of an invalid or corrupt renewal
-            # config rather than simply ignoring it.
+        except (errors.CertStorageError, IOError) as error:
+            # IOError:
+            #    An IOError whose errno is either ENOENT (file not found) or
+            #    EACCES (permission denied) should inform the user of what went
+            #    wrong and then move on to attempt all of the other files.
+            #
+            # CertStorageError:
+            #     This indicates an invalid renewal configuration file, such
+            #     as one missing a required parameter (in the future, perhaps
+            #     also one that is internally inconsistent or is missing a
+            #     required parameter).  As a TODO, maybe we should warn the
+            #     user about the existence of an invalid or corrupt renewal
+            #     config rather than simply ignoring it.
+            if isinstance(IOError):
+                if error.errno is errno.ENOENT:
+                    print ("Could not find file: {FILE}".format(
+                        FILE=renewal_file)
+                    )
+                elif error.errno is errno.EACCES:
+                    print ("Permission denied on file: {FILE}".format(
+                        FILE=renewal_file)
+                    )
+                else:
+                    # This is some IOError other than a missing file or bad
+                    # file permission that should probably throw.
+                    raise error
             continue
         if cert.should_autorenew():
             # Note: not cert.current_version() because the basis for
